@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Privacy guarantee enforced by the browser itself: no scripts can make network
+  requests (connect-src 'none'), and images may only come from data:/blob: URLs
+  or https: (the latter is only there so a hosted watermark PNG can load later;
+  tighten "https:" to your watermark's host once you know it).
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>Photo Watermark</title>
+<style>
+  /* Layout: one quiet column. Notice on top, then preview beside controls (stacked on phones). */
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --ink: #14161a;
+    --muted: #596069;
+    --line: #d9dde3;
+    --accent: #c8102e;      /* stop-sign red, the only loud color */
+    --accent-ink: #ffffff;
+    --focus: #1b5fd1;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101215; --surface: #181b1f; --ink: #eceef1; --muted: #9aa2ad;
+      --line: #2b2f35; --accent: #e23a52; --accent-ink: #ffffff; --focus: #7aa7ff;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101215; --surface: #181b1f; --ink: #eceef1; --muted: #9aa2ad;
+    --line: #2b2f35; --accent: #e23a52; --accent-ink: #ffffff; --focus: #7aa7ff;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.5;
+    padding-inline: 16px;
+    padding-block: 28px 56px;
+  }
+  .wrap { max-width: 920px; margin-inline: auto; display: grid; gap: 28px; }
+
+  .notice {
+    margin: 0;
+    max-width: 68ch;
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+
+  header { display: grid; gap: 6px; }
+  h1 { margin: 0; font-size: 28px; line-height: 1.15; letter-spacing: -0.01em; text-wrap: balance; }
+  header p { margin: 0; color: var(--muted); max-width: 60ch; }
+
+  .app { display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) 280px; align-items: start; }
+  @media (max-width: 760px) { .app { grid-template-columns: minmax(0, 1fr); } }
+
+  .stage {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+  .stage.drag { border-color: var(--accent); outline: 2px dashed var(--accent); outline-offset: -6px; }
+  .canvas-box { display: grid; place-items: center; min-width: 0; }
+  canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    border-radius: 4px;
+    background: repeating-conic-gradient(var(--line) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
+  }
+  .caption { margin: 0; font-size: 13px; color: var(--muted); }
+
+  .controls { display: grid; gap: 16px; }
+  .field { display: grid; gap: 6px; }
+  label, .label { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
+  input[type="text"] {
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    width: 100%;
+  }
+  .hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+  .buttons { display: grid; gap: 10px; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 11px 14px;
+    cursor: pointer;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button:not(:disabled):hover { filter: brightness(0.96); }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+  .status { margin: 0; min-height: 1.5em; font-size: 14px; color: var(--muted); }
+  .status.error { color: var(--accent); font-weight: 600; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="notice">This app runs entirely in your browser and does not record any information about you, does not store the image you upload, does not send the image you upload or the result anywhere else.</p>
+
+  <header>
+    <h1>Photo Watermark</h1>
+    <p>Save your Facebook profile photo to your device, choose it here, and download it with the sign at the bottom center. Tall photos are cropped to a square from the top.</p>
+  </header>
+
+  <main class="app">
+    <section class="stage" id="stage" aria-label="Preview">
+      <div class="canvas-box"><canvas id="preview" aria-label="Preview of the photo with the sign"></canvas></div>
+      <p class="caption" id="caption">Example preview. Choose your photo or drop it here to replace it.</p>
+    </section>
+
+    <section class="controls">
+      <div class="field">
+        <label for="signText">Sign text</label>
+        <input type="text" id="signText" value="Stop Eby" maxlength="30" autocomplete="off" spellcheck="false">
+        <p class="hint">Updates the preview as you type.</p>
+      </div>
+
+      <div class="buttons">
+        <input type="file" id="fileInput" accept="image/*" class="sr" tabindex="-1" aria-hidden="true">
+        <button type="button" id="chooseBtn">Choose photo</button>
+        <button type="button" id="downloadBtn" class="primary" disabled>Download PNG</button>
+      </div>
+
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   CONFIG — edit here
+   ============================================================ */
+const CONFIG = {
+  // Paste the link to the real watermark PNG here, e.g. "https://example.com/stop-sign.png".
+  // Leave empty to use the built-in prototype below.
+  // The host must send CORS headers (Access-Control-Allow-Origin), otherwise the
+  // browser blocks the download of the finished image.
+  WATERMARK_URL: "",
+
+  DEFAULT_TEXT: "Stop Eby",
+  HEIGHT_RATIO: 0.25,       // watermark height as a fraction of the photo height
+  MARGIN_RATIO: 0.03,       // gap from the bottom edge, as a fraction of the (cropped) photo height
+  CROP_TALL_TO_SQUARE: true, // photos taller than wide are cropped to a square, keeping the top
+  MAX_OUTPUT_SIDE: 4096,    // photos larger than this are scaled down (px, longest side)
+
+  // Where the text sits inside the watermark, as fractions of the watermark's size.
+  // Text is fitted to this box and, when that gives larger letters, split onto two lines.
+  // Set TEXT_ENABLED to false if the real watermark already contains its own text.
+  TEXT_ENABLED: true,
+  TEXT_BOX: { x: 0.09, y: 0.25, w: 0.82, h: 0.50 },
+  LINE_HEIGHT: 1.08,
+  TEXT_COLOR: "#ffffff",
+  TEXT_FONT: '800 {size}px "Arial Black", "Helvetica Neue", Arial, system-ui, sans-serif'
+};
+
+// Built-in prototype: transparent PNG with a red octagonal stop sign (no text).
+const BUILTIN_WATERMARK = "data:image/png;base64,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AAAAgEAHAAAAgW4IAAAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAQKADAAAAAh0AAAAEOgAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAAAh0AAAAQ6AAAACDQAQAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAAAQ6AAAAIBABwAAAIEOAAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAQ6AAAACHQAAABAoAMAAIBABwAAAAR6j0fP8AEAAOwqZesfBPqhqjXdvXdTWkMIAABQmiZ1c5K6uWkwBPph3XUltevSHD2S8R/+/kxu300ZjYwLAAAw3Exq20zeWc8D3/VwHvwDvz+pNcVJukA/nEYvaR58IJ/7hX+UE3/qhzK5cTNlZcXAAAAAg4zz6ca9jE6dyOdfeyVHvue7U2v1lmCBfmiFnnQ1o1Mn8ugvvZLjj58T6QAAwHDj/OTxrL1+IeM/8ljqdJoizgX64Y5ck9p1GZ1YzaOviXQAAGDgcX52LXUySWlbgyPQ96523d5uSJEOAACI82/F+V5/P1fXJbUKdHdWSfvQeOuGEOkAAACHH+dNs9VQA4/04QZ6rSkrK9m8fiM3/sUvbT2yPp2KdAAAgEOK852vXX/zSt65/Gba8bE9P+Es0JfhBlsZ5dpzP53rFy+ljEapk4lIBwAAOLQ4v5qrT57P5o1bKSujQZ+iDzvQt3/1f/vQONfOvyjSAQAADj3On83k7TuDPz0X6LuRXtKuinQAAIC5xPmxo3t+y7FAXzadSAcAABDnAl2kAwAAiHOBbghEOgAAgDgX6CIdAABAnCPQRToAAIA4F+giXaQDAADinF4GeikiHQAAQJwf0gvvV4f2J9BrTabTpOnZob5IBwAAxPkSxnlJalIn/bmuftRwrSkrK2nGx9LdezelbUU6AACAOJ9RCZfdaxqdXP1WsA8+0EtJrTXt+Fi+75///aycOZ3p+oZIBwAAEOczifN0NdO76/neV/5uxmcfS+26lB48zd2LE/SdWH3oj/2hrL1+IaOTxzPduCfSAQAAxPlM4vyRV7+Uh595ujdx3ptA343VySTjs2siXaQDAADifPZxPpn0Js57FehJdkNXpIt0AABAnM88zvf4ugcR6CJdpAMAAOJ8iHHey0AX6SIdAAAQ50OL894GukgX6QAAgDgfUpz3OtBFukgHAADE+VDivPeBLtJFOgAAIM6HEOcLEegiXaQDAADifNnj/NsFeifSRToAACDOxflsyjFJ/SSBXpKsinSRDgAAiHNxPpM4b5KMPjbQSym11tokuZPkn23/2aR3N5xIF+kAAIA4X8w4n2yH+eUkv77d4N2HAn3n7yDJtJTyl5O8nGRFpIt0AABAnIvzA43zJ0opbyWppZT6kYG+8we11raU8sJ2pI9EukgHAADEuTg/sDi/VWtt7o/zDwX6fZHeiXSRDgAAiHNxPrM4/9DvffvI3+Iu0kU6AAAgzsX54cX5xwa6SBfpAACAOBfnhxfn3zbQRbpIBwAAxLk4P5w4/46BLtJFOgAAIM7F+ezj/BMFukgX6QAAgDgX57ON808c6CJdpAMAAOJcnM8uzj9VoIt0kQ4AAIhzcT6bOP/UgS7SRToAACDOxfnBx/meAl2ki3QAAECci/ODjfM9B7pIF+kAAIA4F+cHF+f7CnSRLtIBAABxLs4PJs73HegiXaQDAADiXJzvP84PJNBFukgHAADEuTg/gKE4sJtJpIt0AABAnIvz+Qe6SBfpAACAOBfnPQl0kS7SAQAAcS7OexLoIl2kAwAA4lyc9yTQRbpIBwAAxLk470mgi3SRDgAAiHNx3pNAF+kiHQAAEOfivCeBLtJFOgAAIM7FeU8CXaSLdAAAEOfiXJz3JNBFukgHAABxLs7FeU8CXaSLdAAAEOfiXJz3JNBFukgHAABxLs7FeU8CXaSLdAAAEOfiXJz3JNBFukgHAABxLs7FeU8CXaSLdAAAEOfiXJz3JNBFukgHAABxLs6HHue9CXSRLtIBAECci/Mhx3mvAl2ki3QAABDn4nyocd67QBfpIh0AAMS5OB9inPcy0EW6SAcAAHEuzocW570NdJEu0gEAQJyL8yHFea8DXaSLdAAAEOfifChx3vtAF+kiHQAAxLk4H0KcL0Sgi3SRDgAA4lycL3ucL0ygi3SRDgAA4lycL3OcL1Sgi3SRDgAA4lycL2ucL1ygi3SRDgAA4lycL2OcL2Sgi3SRDgAA4lycL1ucL2ygi3SRDgAA4lycL1OcL3Sgi3SRDgAA4lycL0ucL3ygi3SRDgAA4lycL0OcL0Wgi3SRDgAA4lycL8M92CzNN5NIF+kAACDOxblAF+kiXaQDACDOxbk4F+giXaQDAIA4F+cCXaSLdJEOAIA4F+fiXKCLdJEOAADiXJwLdJEu0kU6AADiXJyLc4Eu0kU6AACIc3Eu0EW6SBfpAACIc3EuzgW6SBfpAAAgzsW5QBfpIl2kAwAgzsW5OBfoIl2kAwCAOBfnAl2ki3SRDgCAOBfn4lygi3SRLtIBABDn4lygi3SRLtIBABDn4lycC3SRLtJFOgAA4lycC3SRLtJFOgAA4lyci3OBLtJFukgHAECci3OBLtJFukgHAECci3NxLtBFukgX6QAAiHNxLtBFukgX6QAAiHNxLs4FukgX6SIdAABxLs4FukgX6SIdAABxLs7FuUAX6SJdpAMAIM7FuUBHpIt0AADEuTgX5wJdpIt0kQ4AgDgX5wIdkS7SAQAQ5+JcnAt0kS7SRToAAOJcnAt0RLpIBwBAnItzcS7QRbpIF+kAAPbb4lycC3REukgHAECci3NxLtBFukgX6QAA4lyci3OBjkgX6QAAiHNxLs4FukgX6SIdAECci3NxLtAR6SIdAABxLs7FuUAX6SJdpAMAiHNxLs4FOiJdpIt0AABxLs7FuUAX6SJdpAMAiHNxLs4R6CJdpIt0AABxLs7FuUAX6SJdpAMAiHNxLs4R6CJdpIt0AABxLs7FuUAX6SJdpAMAiHNxLs751veJIThctdaSpCmlTGutLyV5/r5vhH5d60Anvdp1KU2Tye27+fpTz+XOly9n9JlTew5/AABxLs7FOQJdpIv0A4r0u//tK2lPHBfpAADiXJwj0EW6SJ9npP/Gn/ixvPuN3xbpAADiXJwzu1vHEMxpsvKe9IM3i/ekT6cZnVjN537+H2R05nS69Y3+vW4AAHEuzsW5QEekL32kt23qdJrxD2697ravrxsAQJyLc3Eu0BHpg4j0RXjdAADiXJyLc4GOSF/6SF+U1w0AIM7FuTgX6Ih0kQ4AIM7FuThHoIt0kS7SAQDEuTgX5wIdkS7SRToAIM7FuThHoIt0kS7SAQDEuTgX5wIdkb6okf6WSAcAEOfinD59XxmCfqu1liRNKWVaa30pyfP3faP161oXaVKtyfT2nTz6iy/n9FM/nLq5mbKystyvGwBAnItzcS7QEel9m1xL06Tb3Ew7Hmft3w1oUQEAEOfinN7yiPsiTIIedz/4HyR0XZoHHsj09p1cffLZrL951ePuAADiXJwj0BHpc4n06TTNsaOZvC3SAQDEuThHoCPS5x7prUgHABDn4hyBjkgX6QAA4lyci3MEukgX6SIdAECci3MEOiJdpAMAiHNxLs4R6CJdpIt0AABxLs4R6Ih0kS7SAQBxLs7FOQJdpIt0kQ4AIM7FOQIdkS7SRToAIM7FuThHoIt0kS7SAQDEuThHoCPSRbpIBwDEuTgX5wh0kS7SRToAgDgX5wh0RLpIF+kAgDgX5+IcgS7SRbpIBwAQ5+IcgY5IF+kiHQAQ5+JcnCPQRbpIF+kAAOJcnCPQEekiXaQDAOJcnItzvuP3qSEYllprSdKUUqa11peSPH/fRNCva/3ApD+9czfNkSO9m/QHu9gBAOJcnItzBDrDjPQrP/wX021upllZSe36NU+JdABAnItzcc6+b1tDMMBJekEfd/+en/3b6dbvpda6NeH26QcJHncHAMS5OBfnCHSGEulnvvhUvu/C38v0zjtJJ9IBAMS5OEegI9LnFumffebpPPLqlzK9uy7SAQDEuThHoCPS5xnpD4t0kQ4AiHNxjkBHpIt0kQ4AiHNxLs4R6Ih0kS7SAQBxLs4R6Ih0kS7SAQBxLs7FOQIdkS7SRToAIM7FOQIdkS7SRToAIM7FuThHoCPSRbpIBwDEuThHoCPSRbpIBwDEuTgX5wh0RLpIF+kAgDgX5wh0EOkiHQAQ5+JcnCPQEekiXaQDAOJcnCPQQaSLdABAnItzcY5AR6SLdJEOAIhzcY5AB5Eu0gEAcS7OxTkCHZEu0kU6AIhzcS7OEegg0kU6ACDOxbk4R6Aj0kW6SAcAcS7OxTlD/P43BBxIVNZakjSllGmt9eUkz903cfXrWrcn+usXL+Xa+RfTro53FwSLMwBg/Rfn4hyBzrJEeklSk/yXJH9cpFukAQDrvjiHT/jtYAg4sEVl63H3bEf6j25PXB53388PEjzuDgDiXJyLcwQ67DHSu+3/v5nkCZEu0gEAcS7OQaAzx0jfnrBuiXSRDgCIc3EOAh2RLtJFOgCIc3EuzhHoINJFOgAgzsU5CHREukgX6QAgzsW5OEegg0gX6QCAOBfnINAR6SJdpAOAOBfn4hyBDiJdpAMA4lycg0BHpIt0kQ4A4lyci3MEOoh0kQ4AiHNxDgIdkS7SRToAiHNxLs4R6CDSRToAIM7FOQh0RLpIF+kAIM7FuThHoINIF+kAgDgX5yDQEekiXaQDgDgX5+IcgQ4iXaSLdADEuTgX5yDQEekiXaQDgDgX5+IcgQ4iXaSLdADEuTgX5yDQEekiXaQDgDgX5+IcgQ4iXaSLdADEuTgX5yDQEekiXaQDgDgX5+IcgQ4iXaSLdADEuTgX5yDQEekiXaQDgDgX5+IcgQ4iXaSLdADEuTgX5yDQEekiXaQDgDgX5+IcgQ4iXaSLdADEuTgX5yDQQaSLdAAQ5+JcnCPQQaSLdJEOgDgX5+IcBDqIdJEOAOJcnItzBDqIdJEu0gEQ5+JcnINAB5Eu0gFAnItzcY5AB5Eu0kU6AOJcnItzEOgg0kU6AIhzcS7OEegg0kW6SAdAnItzcQ4CHUS6SAcAcS7OxTkCHUS6SBfpAIhzcS7OQaCDSBfpbmAAxLk4F+cIdBDpIl2kAyDOxbk4B4EOIl2ki3QAxLk4F+cIdBDpIl2kAyDOxbk4B4EOIl2ki3QAxLk4F+cIdBDpIl2kAyDOxbk4B4EOIl2ki3QAxLk4F+cIdBDpIl2kAyDOxbk4B4EOIl2ki3QAxLk4F+cIdBDpIl2kAyDOxbk4B4EOIl2ki3QAxLk4B4FuCECki3QAxLk4F+cg0EGki3SRDoA4F+eAQAeRLtIBEOfiXJyDQAeRLtJFOgDiXJwDAh1EukgHQJyLc3EOAh1EukgX6QCIc3EOCHQQ6SIdAHEuzsU5CHQQ6SJdpAMgzsU5INBBpIt0AMS5OBfnINBBpIt0kQ6AOBfngEAHkS7SARDn4lycg0AHkS7SRToA4lycAwIdRLpIF+kA4lyci3MQ6CDSRbpIB0Cci3NAoINIF+kiHUCci3NxDgIdRLpIF+kAiHNxDgh0EOkiXaQDiHNxLs5BoINIF+kiHQBxLs4BgQ4iXaSLdABxLs7FOQh0EOkiffEifSTSAQ5vDRLn4hz4PfOiIYAZRuX2AlZrPZXkjSTn7lvo+nWt2xuD6xcv5dr5F9Oujnc3EL2atGZ+0nI77UPj1GlnggSY1ZqTpLRNpu+sZ3TyhDgX54BAB5Eu0j+4qbuSr/3oT+b9/3s9ZWWld68bYGk0JXVzMw/8vofz+V/+uYzPPibOxTkg0EGki/Tt1z2dprRt3vud38271/5nygMPJNUeBGA2k3iT+v77OfLIH8yD3/1du3OwOBfnINABkS7St3Rd0vjVHACHah9zrzgX5yDQAZG+1JFeU2u3PT16xB1gdlvQmlKaPf9SUnEuzkGgAyJ9CJEOQL/XUnEuzmFJeZYTDjsmfQTbwW/UDvgj2AAQ5+JcnINAB5Eu0kU6AOJcnINAB0S6SAdAnItzcQ4CHUS6SBfpAIhzcQ4CHRDpIh0AcS7OAYEOIl2ki3QAxLk4B4EOiHSRDoA4F+eAQAdEukgHQJyLcyDFEEAPNybbC2at9VSSN5Kcu29h7eUm6vrFS7l2/sW0q+PdDUuvJru2zXTjXkYnj2ft9QsZn13buvamSXXLAfRmY1q7TpyLcxDogEgfUqR//t/+XB76oz/gRgPooXe+8tV87c/+pDgX5yDQAZG+9JG+vpGVz57O+OxjSa1JMRUC9GThS0rJ+ptXsvnWzbTjY+JcnINAB0T6Mkd6miZ1c5Ju454bDKCHmmNHU1ZGSdezjhTngEAHRPosZr+S0jRJqqkQoD+rSJKS2nVbp+niXJyDQAdE+kAiHQDEOdCn6cYQwGLwEWwAIM7FOQh0QKSLdADEuTgHBDog0gFAnItzEOiASBfpAIhzcQ4IdECkA4A4F+cg0AGRLtIBEOfiHBDogEgHAHEuzkGgAyJdpAMgzsU5INABkQ4A4lycg0AHRLpIB0Cci3NAoAMiXaQDIM7FOQh0QKSLdADEuTgHBDog0kU6AOJcnINAB0S6SAdAnItzQKADIl2kAyDOxTkIdECki3QAxLk4BwQ6INJFOgDiXJyDQAdEukgHQJyLc0CgAyJdpAMgzsU5INBBpIt0AMS5OAcEOiDSRToA4lycAwIdRLpIB0Cci3NAoAMiXaQDIM7FOSDQgSWLdNMZwHB3tI04B5ZjX24IgB07G4Ra66kkbyQ5d99Gol/Xur3xun7xUq6dfzHt6jilbVNrNbEBDGXdSlJKSZ1OxTkg0AGR3pdI/63nfnprSivbOzYAhrGTrVup/r2v/Iw4BwQ6INLneq1dl9I0Wf/1r2Vy63ZK2yp0gAFtZet0mtGpExn/4Od31wRxDgh0QKTPS9d5DzrA0PV3LRDngEAHhhXpteuSWuMZd4ChbWVrUoqTc0CgAyIdABDnwMHwTCjwbS3SR7ABgDgHBDog0gEAcQ4IdECkA4A4BwQ6INJFOgCIc0CgAyIdAMQ5INABkS7SARDn4hwQ6IBIBwBxDgh0QKSLdADEuTgHBDog0gFAnAMCHUCkAyDOxTkg0AGRDgDiHBDoACIdAHEuzgGBDoh0ABDngEAHEOkAiHNxDgh0QKQDgDgHBDqASAdAnItzQKADIh0AxDkg0AFEOgDiHECgAyIdAMQ5INABRDoA4hxAoAMiHQDEOSDQAUQ6AOIcQKADIh0AxDkg0AFEOgDiHODw9seGAJi3nQ1RrfVUkjeSnNveOPkhIgCz0IlzQKADfOdIP53k329HOgDMyuUkf6aUclOcAwId4OMjfXU70DvzFAAHvdxk6wmty6WUu+IcAODjI12QA2DNAQbJpAT0dcPk/ecAzFJXSqmGAQAAAAAAAAAA+ub/A3TE7KdKurQ4AAAAAElFTkSuQmCC";
+
+/* ============================================================
+   App
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+const canvas = $("preview");
+const ctx = canvas.getContext("2d");
+const signText = $("signText");
+const chooseBtn = $("chooseBtn");
+const downloadBtn = $("downloadBtn");
+const fileInput = $("fileInput");
+const statusEl = $("status");
+const captionEl = $("caption");
+const stage = $("stage");
+
+signText.value = CONFIG.DEFAULT_TEXT;
+
+let watermark = null;       // HTMLImageElement
+let photo = null;           // CanvasImageSource (user's photo, or the example)
+let photoIsReal = false;
+let photoUrl = null;        // object URL, revoked when replaced
+let photoName = "photo";
+
+function setStatus(msg, isError) {
+  statusEl.textContent = msg || "";
+  statusEl.classList.toggle("error", !!isError);
+}
+
+function loadImage(src, cors) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (cors) img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("load failed"));
+    img.src = src;
+  });
+}
+
+function dims(src) {
+  return { w: src.naturalWidth || src.width, h: src.naturalHeight || src.height };
+}
+
+/* Draw photo + watermark + text onto the canvas. */
+function compose() {
+  if (!photo || !watermark) return;
+  // 1. Source rectangle: a tall photo is cropped to a square that starts at the top edge.
+  const p = dims(photo);
+  const sx = 0, sy = 0;
+  const sw = p.w;
+  const sh = (CONFIG.CROP_TALL_TO_SQUARE && p.h > p.w) ? p.w : p.h;
+
+  // 2. Output size (scaled down only if very large).
+  const k = Math.min(1, CONFIG.MAX_OUTPUT_SIDE / Math.max(sw, sh));
+  const W = Math.max(1, Math.round(sw * k));
+  const H = Math.max(1, Math.round(sh * k));
+  canvas.width = W;
+  canvas.height = H;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(photo, sx, sy, sw, sh, 0, 0, W, H);
+
+  const wm = dims(watermark);
+  const aspect = wm.w / wm.h;
+  const margin = H * CONFIG.MARGIN_RATIO;
+  let wmH = H * CONFIG.HEIGHT_RATIO;
+  let wmW = wmH * aspect;
+  if (wmW > W - margin * 2) {          // very narrow photo: shrink to fit the width
+    wmW = Math.max(1, W - margin * 2);
+    wmH = wmW / aspect;
+  }
+  // 3. Watermark: horizontally centred, resting on the bottom edge (plus margin).
+  const x = (W - wmW) / 2;
+  const y = Math.max(0, H - wmH - margin);
+  ctx.drawImage(watermark, x, y, wmW, wmH);
+
+  const text = signText.value.trim();
+  if (CONFIG.TEXT_ENABLED && text) {
+    const b = CONFIG.TEXT_BOX;
+    const boxW = wmW * b.w, boxH = wmH * b.h;
+    const cx = x + wmW * (b.x + b.w / 2);
+    const cy = y + wmH * (b.y + b.h / 2);
+
+    const fit = fitText(text, boxW, boxH);
+    ctx.font = CONFIG.TEXT_FONT.replace("{size}", fit.size);
+    ctx.fillStyle = CONFIG.TEXT_COLOR;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    const capH = ctx.measureText("H").actualBoundingBoxAscent;
+    const pitch = fit.size * CONFIG.LINE_HEIGHT;
+    fit.lines.forEach((line, i) => {
+      const offset = (i - (fit.lines.length - 1) / 2) * pitch;
+      ctx.fillText(line, cx, cy + offset + capH / 2);   // centre on cap height
+    });
+  }
+}
+
+/* Largest text size that fits the box, on one line or split over two at a space. */
+function fitText(text, boxW, boxH) {
+  const REF = 100;
+  ctx.font = CONFIG.TEXT_FONT.replace("{size}", REF);
+  const width = (s) => ctx.measureText(s).width;
+
+  const options = [[text]];
+  const words = text.split(/\s+/);
+  if (words.length > 1) {
+    let best = null;
+    for (let i = 1; i < words.length; i++) {
+      const pair = [words.slice(0, i).join(" "), words.slice(i).join(" ")];
+      const w = Math.max(width(pair[0]), width(pair[1]));
+      if (!best || w < best.w) best = { w, pair };
+    }
+    options.push(best.pair);
+  }
+
+  let winner = null;
+  for (const lines of options) {
+    const widest = Math.max(...lines.map(width));
+    const size = Math.max(4, Math.min(REF * boxW / widest, boxH / (lines.length * CONFIG.LINE_HEIGHT)));
+    if (!winner || size > winner.size * 1.02) winner = { lines, size };   // prefer one line unless clearly bigger
+  }
+  return winner;
+}
+
+let pending = false;
+function scheduleCompose() {
+  if (pending) return;
+  pending = true;
+  requestAnimationFrame(() => { pending = false; compose(); });
+}
+
+/* A generated stand-in so the page shows what it does before a photo is chosen. */
+function makeExamplePhoto() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 800;
+  const g = c.getContext("2d");
+  const bg = g.createLinearGradient(0, 0, 0, 800);
+  bg.addColorStop(0, "#9fb4c7");
+  bg.addColorStop(1, "#5d7488");
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 800, 800);
+  g.fillStyle = "#34495c";                       // shoulders
+  g.beginPath(); g.ellipse(400, 860, 300, 270, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#d9b99b";                       // neck + head
+  g.fillRect(350, 470, 100, 110);
+  g.beginPath(); g.ellipse(400, 380, 120, 148, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#3a2f2a";                       // hair
+  g.beginPath(); g.ellipse(400, 300, 126, 100, 0, Math.PI, 0); g.fill();
+  return c;
+}
+
+function showExample() {
+  photo = makeExamplePhoto();
+  photoIsReal = false;
+  downloadBtn.disabled = true;
+  captionEl.textContent = "Example preview. Choose your photo or drop it here to replace it.";
+  scheduleCompose();
+}
+
+async function useFile(file) {
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    setStatus("That file is not an image. Choose a JPG or PNG.", true);
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(url, false);
+    if (photoUrl) URL.revokeObjectURL(photoUrl);
+    photoUrl = url;
+    photo = img;
+    photoIsReal = true;
+    photoName = file.name.replace(/\.[^.]+$/, "") || "photo";
+    downloadBtn.disabled = false;
+    captionEl.textContent = "Your photo. Nothing leaves this page.";
+    setStatus("");
+    compose();
+  } catch (e) {
+    URL.revokeObjectURL(url);
+    setStatus("This browser could not read that image. Try a JPG or PNG.", true);
+  }
+}
+
+function download() {
+  if (!photoIsReal) return;
+  compose();
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      setStatus("Could not create the image. Try a smaller photo.", true);
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = photoName + "-watermarked.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setStatus("Downloaded.");
+  }, "image/png");
+}
+
+/* Events */
+chooseBtn.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => {
+  useFile(fileInput.files[0]);
+  fileInput.value = "";
+});
+downloadBtn.addEventListener("click", download);
+signText.addEventListener("input", scheduleCompose);
+
+["dragenter", "dragover"].forEach((t) =>
+  stage.addEventListener(t, (e) => { e.preventDefault(); stage.classList.add("drag"); }));
+["dragleave", "drop"].forEach((t) =>
+  stage.addEventListener(t, (e) => { e.preventDefault(); stage.classList.remove("drag"); }));
+stage.addEventListener("drop", (e) => useFile(e.dataTransfer.files[0]));
+// Dropping outside the stage should not navigate away from the page.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => e.preventDefault());
+
+/* Boot */
+(async function init() {
+  try {
+    const url = CONFIG.WATERMARK_URL || BUILTIN_WATERMARK;
+    watermark = await loadImage(url, !!CONFIG.WATERMARK_URL);
+  } catch (e) {
+    setStatus("The watermark image could not be loaded. Check WATERMARK_URL in the code.", true);
+    chooseBtn.disabled = true;
+    return;
+  }
+  showExample();
+})();
+</script>
+</body>
+</html>
